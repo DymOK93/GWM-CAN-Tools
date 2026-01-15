@@ -4,7 +4,11 @@ import can
 import time
 
 #
-#
+# @brief Turn on the ignition
+# @param[in] bus CAN bus instance
+# @warning Some commands require the ignition to be turned on first
+# @remark Mesages from the real trace contained data = bytes.fromhex('0110010401000000')
+# but the devices do'not read the message contents
 #
 def ignitionOn(bus: can.interface.Bus) -> can.CyclicSendTaskABC:
     print('Turn ignition ON')
@@ -21,14 +25,17 @@ def ignitionOn(bus: can.interface.Bus) -> can.CyclicSendTaskABC:
     return task
 
 #
-#
+# @brief Turn off the ignition
+# @param[in] task Periodic ignition task
 #
 def ignitionOff(_: can.interface.Bus, task: can.CyclicSendTaskABC) -> None:
     print('Turn ignition OFF')
     task.stop()
 
 #
-#
+# @brief Turn off the HUT display
+# @param[in] bus CAN bus instance
+# @warning The ignition should be on
 #
 def hutDisplayOn(bus: can.interface.Bus) -> None:
     print('Turn HUT display ON')
@@ -38,7 +45,8 @@ def hutDisplayOn(bus: can.interface.Bus) -> None:
             is_extended_id = False))
     
 #
-#
+# @brief Turn off the HUT display
+# @param[in] bus CAN bus instance
 #
 def hutDisplayOff(bus: can.interface.Bus, _: None) -> None:
     print('Turn HUT display OFF')
@@ -48,14 +56,15 @@ def hutDisplayOff(bus: can.interface.Bus, _: None) -> None:
             is_extended_id = False))
     
 #
-#
+# Event loop
+# @param[in] bus CAN bus instance
 #
 def eventLoop(bus: can.interface.Bus) -> None:
     cmds = {
         'ign=on': ignitionOn,
         'ign=off': ignitionOff,
-        'hut-disp=on': displayOn,
-        'hut-disp=off': displayOff
+        'hut-disp=on': hutDisplayOn,
+        'hut-disp=off': hutDisplayOff
     }
 
     tasks = {}
