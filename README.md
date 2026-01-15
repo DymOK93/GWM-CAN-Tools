@@ -2,7 +2,7 @@
 ## Description
 Tools for emulating the sequence of CAN commands for running automotive units in the home lab.
 ## Requirements
-Python 3.2 or newer.
+Python 3.2 or newer with python-can and pyserial packages installed.
 CAN adapter with slcan support (e.g. MKS Canable V2.0).
 ## Usage
 Change the channel to the COM name (Windows) or the device path (Linux) in the `can.ini` configuration file.
