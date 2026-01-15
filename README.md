@@ -3,8 +3,9 @@
 Tools for emulating the sequence of CAN commands for running automotive units in the home lab.
 ## Requirements
 Python 3.2 or newer.
-CAN adapter with slcan support (e.g. MKS Canable V2.0)
+CAN adapter with slcan support (e.g. MKS Canable V2.0).
 ## Usage
+Change the channel to the COM name (Windows) or the device path (Linux) in the `can.ini` configuration file.
 ### Replay traces
 Can be recorded in the .candump format using tools such as Cangoroo.
 ```
@@ -27,8 +28,8 @@ sc-can-emulator.py
 sc-can> (see available commands below)
 ```
 Commands:
-* `ign=on` - turn on the ignition
-* `ign=off` - turn off the ignition
-* `hut-disp=on` - turn on the HUT display (works only when the ignition is on)
-* `hut-disp=off` - turn off the HUT display
-* `exit`- finish work
+* `ign=on` - turn on the ignition;
+* `ign=off` - turn off the ignition;
+* `hut-disp=on` - turn on the HUT display (works only when the ignition is on);
+* `hut-disp=off` - turn off the HUT display;
+* `exit` (or just press CTRL+C) - finish work.

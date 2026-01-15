@@ -7,8 +7,8 @@ import time
 # @brief Turn on the ignition
 # @param[in] bus CAN bus instance
 # @warning Some commands require the ignition to be turned on first
-# @remark Mesages from the real trace contained data = bytes.fromhex('0110010401000000')
-# but the devices do'not read the message contents
+# @remark Messages from the real trace contains data = bytes.fromhex('0110010401000000')
+# but the devices usually ignore message contents
 #
 def ignitionOn(bus: can.interface.Bus) -> can.CyclicSendTaskABC:
     print('Turn ignition ON')
@@ -92,10 +92,8 @@ def eventLoop(bus: can.interface.Bus) -> None:
                     ctx = tasks.pop(target)
                     cmd(bus, ctx)
                     
-
         except (EOFError, KeyboardInterrupt):
             break
-
 
 #
 # Does processing
@@ -105,7 +103,6 @@ def main():
     with can.interface.Bus() as bus:
         eventLoop(bus)
     print('Exit')
-
 
 #
 # Launches main
