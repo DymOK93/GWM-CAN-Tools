@@ -37,19 +37,23 @@ def ignitionOff(_: can.interface.Bus, task: can.CyclicSendTaskABC) -> None:
 # @param[in] bus CAN bus instance
 # @warning The ignition should be on
 #
-def hutDisplayOn(bus: can.interface.Bus) -> None:
+def hutDisplayOn(bus: can.interface.Bus) -> can.CyclicSendTaskABC:
     print('Turn HUT display ON')
-    bus.send(can.Message(
+    msg = can.Message(
             arbitration_id = 0x295,
             data = bytes.fromhex('B1A000C000000006'),
-            is_extended_id = False))
+            is_extended_id = False)
+    task = bus.send_periodic(msg, 1)
+    assert isinstance(task, can.CyclicSendTaskABC)
+    return task
     
 #
 # @brief Turn off the HUT display
 # @param[in] bus CAN bus instance
 #
-def hutDisplayOff(bus: can.interface.Bus, _: None) -> None:
+def hutDisplayOff(bus: can.interface.Bus, task: can.CyclicSendTaskABC) -> None:
     print('Turn HUT display OFF')
+    task.stop()
     bus.send(can.Message(
             arbitration_id = 0x295,
             data = bytes.fromhex('B120000000000007'),
@@ -71,6 +75,8 @@ def eventLoop(bus: can.interface.Bus) -> None:
     while True:
         try:
             line = input("sc-can> ").strip()
+            if not line:
+                continue
             if line == 'exit':
                 break
 
