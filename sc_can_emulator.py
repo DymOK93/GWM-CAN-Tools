@@ -33,7 +33,7 @@ def ignitionOff(_: can.interface.Bus, task: can.CyclicSendTaskABC) -> None:
     task.stop()
 
 #
-# @brief Turn off the HUT display
+# @brief Turn on the HUT display and wireless interfaces (WiFi, BT)
 # @param[in] bus CAN bus instance
 # @warning The ignition should be on
 #
@@ -48,7 +48,7 @@ def hutDisplayOn(bus: can.interface.Bus) -> can.CyclicSendTaskABC:
     return task
     
 #
-# @brief Turn off the HUT display
+# @brief Turn off the HUT display and wireless interfaces (WiFi, BT)
 # @param[in] bus CAN bus instance
 #
 def hutDisplayOff(bus: can.interface.Bus, task: can.CyclicSendTaskABC) -> None:
@@ -77,8 +77,14 @@ def eventLoop(bus: can.interface.Bus) -> None:
             line = input("sc-can> ").strip()
             if not line:
                 continue
-            if line == 'exit':
+
+            if line == 'exit' or line == 'quit':
                 break
+
+            if line == 'state':
+                for target in tasks.keys():
+                    print(f'State: {target} is ON')
+                continue
 
             cmd = cmds.get(line)
             if cmd is None:
