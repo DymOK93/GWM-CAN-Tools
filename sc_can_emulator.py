@@ -322,7 +322,7 @@ def main():
     print('SC-CAN emulator')
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--uds-mode', type = str, default = 'user', help = 'Work mode (user, developer)')
+    parser.add_argument('--uds-mode', type = str, default = 'user', choices = ['user', 'developer'], help = 'Work mode')
     parser.add_argument('--loglevel', default = 'ERROR', choices = ['DEBUG', 'INFO', 'WARNING', 'ERROR'], help='Logging level')
     args = parser.parse_args()
 

@@ -22,14 +22,41 @@ options:
                         first,last trace lines
 ```
 ### Emulate SC-CAN
-Devices on the bus: Gateway, HUT, T-Box, ADAS, IP (Cluster)
+Devices on the bus: Gateway, HUT (only Harman GWMv2 is supported), T-Box, ADAS, IP (Cluster)
 ```
-sc-can-emulator.py
+usage: sc_can_emulator.py [-h] [--uds-mode {user,developer}] [--loglevel {DEBUG,INFO,WARNING,ERROR}]
+
+options:
+  -h, --help            show this help message and exit
+  --uds-mode {user,developer}
+                        Work mode
+  --loglevel {DEBUG,INFO,WARNING,ERROR}
+                        Logging level
+
 sc-can> (see available commands below)
 ```
 Commands:
 * `ign=on` - turn on the ignition;
 * `ign=off` - turn off the ignition;
-* `hut-disp=on` - turn on the HUT display (works only when the ignition is on);
-* `hut-disp=off` - turn off the HUT display;
+* `hut-stb=on` - switch HUT to standby mode (works only when the ignition is on);
+* `hut-stb=off` - switch HUT to background mode;
+* `hut-reboot=<boot_target>` - reboot the HUT to `normal`, `recovery` or `ELK` (supported only in developer mode)
 * `exit` (or just press CTRL+C) - finish work.
+
+### Reboot HUT using a J2534-compatible OBD2-scanner
+```
+usage: hut_reboot_j2534.py [-h] [--uds-mode {user,developer}] [--windll WINDLL]
+                           [--loglevel {DEBUG,INFO,WARNING,ERROR}]
+                           {}
+
+positional arguments:
+  {}                    Boot target
+
+options:
+  -h, --help            show this help message and exit
+  --uds-mode {user,developer}
+                        Work mode
+  --windll WINDLL       Path to J2534 shared library
+  --loglevel {DEBUG,INFO,WARNING,ERROR}
+                        Logging level
+```
