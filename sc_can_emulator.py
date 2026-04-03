@@ -5,8 +5,10 @@ import isotp
 from udsoncan.connections import PythonIsoTpConnection
 from abc import ABC, abstractmethod
 import argparse
+from dataclasses import dataclass, fields
 import logging
 import time
+import threading
 import uds
 
 #
@@ -75,7 +77,7 @@ class TaskBase(ABC):
         self.task = None
 
 #
-# @brief Ignition peridic task
+# @brief Ignition periodic task
 #
 class IgnitionTask(TaskBase):
     #
@@ -137,6 +139,164 @@ class HutStandbyTask(TaskBase):
             arbitration_id = 0x295,
             data = bytes.fromhex('B120000000000007'),
             is_extended_id = False))
+        
+#
+#
+#
+@dataclass
+class BodyState:
+    left_turn_signal: bool
+    right_turn_signal: bool
+
+#
+# @brief KBCM periodic task
+#
+class BodyTask(TaskBase):
+    #
+    #
+    #
+    kDefaultState = 0xC00500
+    
+    #
+    #
+    #
+    @staticmethod
+    def convert(state: BodyState) -> int:
+        raw_state = BodyTask.kDefaultState
+
+        if state.left_turn_signal:
+            raw_state |= 0x800
+
+        if state.right_turn_signal:
+            raw_state |= 0x1000
+
+        return raw_state
+    
+    #
+    #
+    #
+    @staticmethod
+    def calcCrc(data: bytes) -> int:
+        crc = 0x38
+        for byte in data:          # data = bytes[1:8] (7 байт)
+            crc ^= byte
+            for _ in range(8):
+                if crc & 0x80:
+                    crc = ((crc << 1) & 0xFF) ^ 0x1D
+                else:
+                    crc = (crc << 1) & 0xFF
+        return crc
+    
+    #
+    #
+    #
+    @staticmethod
+    def _makeData(state: int, counter: int | None) -> bytearray:
+        data = bytearray(8)
+        data[7] = 0 if  counter is None else (counter + 1) % 15  # 0x0...0xE
+        data[1:7] = state.to_bytes(6, 'little')
+        data[0] = BodyTask.calcCrc(data[1:])
+        return data
+    
+    #
+    #
+    #
+    def _getState(self) -> int:
+        with self.lock as _:
+            return self.state
+        
+    #
+    #
+    #
+    def _setState(self, state: int) -> None:
+        with self.lock as _:
+            self.state = state
+
+    #
+    #
+    #
+    def _mutate(self, old_data: bytes) -> bytearray:
+        state = self._getState() & 0x0000FFFFFFFFFFFF
+        return BodyTask._makeData(state, old_data[7])
+    
+    #
+    #
+    #
+    def __init__(self, bus: can.interface.Bus):
+        super().__init__('body', bus)
+        self.lock = threading.Lock()
+        self.state = self.kDefaultState
+
+    #
+    #
+    #
+    def _create(self):
+        #
+        # Initial handshake
+        #
+        print('Initial KBCM handshake')
+        msg = can.Message(
+            arbitration_id = 0x165,
+            data = self._makeData(0, None),
+            is_extended_id = False)
+        for i in range(0, 4):
+            self.bus.send(msg)
+            time.sleep(0.02)
+
+        #
+        # Second handshake
+        #
+        print('2nd KBCM handshake')
+        msg.data = self._makeData(0x0500, None)
+        for i in range(0, 4):
+            self.bus.send(msg)
+            time.sleep(0.02)
+
+        #
+        # Third handshake
+        #
+        print('Default KBCM data')
+        msg.data = self._makeData(BodyTask.kDefaultState, None)
+        for i in range(0, 4):
+            self.bus.send(msg)
+            time.sleep(0.02)
+        
+        print(f'Run state loop: 0x{self._getState():X}')
+        mutator = lambda msg: setattr(msg, 'data', self._mutate(msg.data))
+        task = self.bus.send_periodic(msg, 0.2, modifier_callback = mutator)
+        assert isinstance(task, can.CyclicSendTaskABC)
+        return task
+
+    #
+    #
+    #
+    def _destroy(self, task):
+        task.stop()
+        self._setState(0)
+
+    #
+    #
+    #
+    def update(self, state: BodyState) -> None:
+        old_state = self._getState()
+        new_state = BodyTask.convert(state)
+        if old_state == new_state:
+            raise ValueError('Body state is not changed')
+
+        self._setState(new_state)
+        print(f'Body state change: 0x{old_state:X} -> 0x{new_state:X}')
+
+#
+# Translator for on/off
+#
+def isTurnOnOff(arg: str) -> bool | None:
+    if arg == '1' or arg == 'on':
+        return True
+    
+    if arg == '0' or arg == 'off':
+        return False
+
+    return None 
 
 #
 # Executable command
@@ -170,12 +330,15 @@ class OnOffTaskCommand(CommandBase):
     #
     #
     def execute(self, arg: str) -> None:
-        if arg == 'on':
-            self.task.start()
-        elif arg == 'off':
-            self.task.stop()
-        else:
+        start = isTurnOnOff(arg)
+        if start is None:
             raise ValueError(f'Unknown argument {arg} for {self.task.name}')
+
+        if start:
+            self.task.start()
+        else:
+            self.task.stop()
+            
 #
 # Ignition command
 # @warning Some commands require the ignition to be turned on first
@@ -273,11 +436,70 @@ class HutRebootCommand(CommandBase):
     #
     #
     def execute(self, target: str):
+        if target is None:
+            raise ValueError('Target must be provided')
+
         print(f'Reboot HUT to {target}')
         with Notifier(self.bus) as notifier:
             make_conn = lambda txid, rxid: HutRebootCommand._createConnection(self.bus, notifier, txid, rxid)
             with uds.HarmanHut(self.uds_mode, make_conn) as hut:
                 hut.reboot(target)
+
+#
+# @brief Body command 
+# Controls display and wireless interfaces (WiFi, BT)
+# @warning The ignition should be on
+#
+class BodyCommand(CommandBase):
+    #
+    #
+    #
+    def __init__(self, bus: can.interface.Bus):
+        super().__init__()
+        self.task = BodyTask(bus)
+        self.state = BodyState(False, False)
+
+    #
+    #
+    #
+    def _apply(self, component: str, action: str) -> None:
+        enabled = isTurnOnOff(action)
+        if enabled is None:
+            raise ValueError(f'Action {action} is not supported')
+        
+        if component == 'all' or component == 'a':
+            self.state = BodyState(**{f.name: enabled for f in fields(BodyState)})
+        else:
+            field = {
+                'lts': 'left_turn_signal', 
+                'rts': 'right_turn_signal'
+            }.get(component)
+            if field is None:
+                raise ValueError(f'Component {component} is not supported')
+            
+            setattr(self.state, field, enabled)
+
+    #
+    #
+    #
+    def execute(self, arg) -> None:
+        if arg is None:
+            raise ValueError('Argument must be provided')
+        
+        parts = arg.split('.')
+        if len(parts) == 1:
+            start = isTurnOnOff(arg)
+            if start is None:
+                raise ValueError(f'Argument {arg} is not supported')
+            if start:
+                self.task.start()
+            else:
+                self.task.stop()
+        elif len(parts) == 2:
+            self._apply(*parts)
+            self.task.update(self.state)
+        else:
+            raise ValueError(f'Invalid part count: {arg}')
 
 #
 # Event loop
@@ -287,7 +509,8 @@ def eventLoop(emu: Emulator) -> None:
     cmds = {
         'ign': IgnitionCommand(emu.bus),
         'hut-stb': HutStandbyCommand(emu.bus),
-        'hut-reboot': HutRebootCommand(emu.bus, emu.uds_mode)
+        'hut-reboot': HutRebootCommand(emu.bus, emu.uds_mode),
+        'body': BodyCommand(emu.bus)
     }
 
     tasks = {}
@@ -297,7 +520,7 @@ def eventLoop(emu: Emulator) -> None:
             if not line:
                 continue
 
-            if line == 'exit' or line == 'quit':
+            if line == 'exit' or line == 'quit' or line == 'q':
                 break
 
             parts = line.split('=')
@@ -312,7 +535,9 @@ def eventLoop(emu: Emulator) -> None:
             cmd.execute(arg)
         except ValueError as exc:
             print(exc)
-        except (EOFError, KeyboardInterrupt):
+        except KeyboardInterrupt:
+            print('')
+        except (EOFError):
             break
 
 #
