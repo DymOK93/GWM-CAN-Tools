@@ -145,8 +145,8 @@ class HutStandbyTask(TaskBase):
 #
 @dataclass
 class BodyState:
-    left_turn_signal: bool
-    right_turn_signal: bool
+    left_turn_signal: bool = False
+    right_turn_signal: bool = False
 
 #
 # @brief KBCM periodic task
@@ -155,7 +155,7 @@ class BodyTask(TaskBase):
     #
     #
     #
-    kDefaultState = 0xC00500
+    kDefaultState = 0xC00000
     
     #
     #
@@ -193,7 +193,7 @@ class BodyTask(TaskBase):
     @staticmethod
     def _makeData(state: int, counter: int | None) -> bytearray:
         data = bytearray(8)
-        data[7] = 0 if  counter is None else (counter + 1) % 15  # 0x0...0xE
+        data[7] = 0 if counter is None else (counter + 1) % 15  # 0x0...0xE
         data[1:7] = state.to_bytes(6, 'little')
         data[0] = BodyTask.calcCrc(data[1:])
         return data
@@ -215,9 +215,9 @@ class BodyTask(TaskBase):
     #
     #
     #
-    def _mutate(self, old_data: bytes) -> bytearray:
+    def _mutate(self, old_data: bytes | None) -> bytearray:
         state = self._getState() & 0x0000FFFFFFFFFFFF
-        return BodyTask._makeData(state, old_data[7])
+        return BodyTask._makeData(state, None if old_data is None else old_data[7])
     
     #
     #
@@ -231,37 +231,10 @@ class BodyTask(TaskBase):
     #
     #
     def _create(self):
-        #
-        # Initial handshake
-        #
-        print('Initial KBCM handshake')
         msg = can.Message(
             arbitration_id = 0x165,
-            data = self._makeData(0, None),
+            data = self._mutate(None),
             is_extended_id = False)
-        for i in range(0, 4):
-            self.bus.send(msg)
-            time.sleep(0.02)
-
-        #
-        # Second handshake
-        #
-        print('2nd KBCM handshake')
-        msg.data = self._makeData(0x0500, None)
-        for i in range(0, 4):
-            self.bus.send(msg)
-            time.sleep(0.02)
-
-        #
-        # Third handshake
-        #
-        print('Default KBCM data')
-        msg.data = self._makeData(BodyTask.kDefaultState, None)
-        for i in range(0, 4):
-            self.bus.send(msg)
-            time.sleep(0.02)
-        
-        print(f'Run state loop: 0x{self._getState():X}')
         mutator = lambda msg: setattr(msg, 'data', self._mutate(msg.data))
         task = self.bus.send_periodic(msg, 0.2, modifier_callback = mutator)
         assert isinstance(task, can.CyclicSendTaskABC)
@@ -272,7 +245,6 @@ class BodyTask(TaskBase):
     #
     def _destroy(self, task):
         task.stop()
-        self._setState(0)
 
     #
     #
@@ -285,6 +257,132 @@ class BodyTask(TaskBase):
 
         self._setState(new_state)
         print(f'Body state change: 0x{old_state:X} -> 0x{new_state:X}')
+
+        old_data_hex = BodyTask._makeData(old_state, None).hex().upper()
+        new_data_hex = BodyTask._makeData(new_state, None).hex().upper()
+        print(f'Body data: {old_data_hex} -> {new_data_hex}')
+
+#
+#
+#
+@dataclass
+class WheelButtonState:
+    volume_up: bool = False
+    volume_down: bool = False
+
+#
+# @brief KBCM periodic task
+#
+class WheelButtonTask(TaskBase):
+    #
+    #
+    #
+    kDefaultState = 0xFCF00F0F000F
+    
+    #
+    #
+    #
+    @staticmethod
+    def convert(state: WheelButtonState) -> int:
+        raw_state = WheelButtonTask.kDefaultState
+
+        if state.volume_up:
+            raw_state |= 0x4000
+
+        if state.volume_down:
+            raw_state |= 0x1000
+
+        return raw_state
+    
+    #
+    #
+    #
+    @staticmethod
+    def calcCrc(data: bytes) -> int:
+        crc = 0xD7
+        for byte in data:          # data = bytes[1:8] (7 байт)
+            crc ^= byte
+            for _ in range(8):
+                if crc & 0x80:
+                    crc = ((crc << 1) & 0xFF) ^ 0x1D
+                else:
+                    crc = (crc << 1) & 0xFF
+        return crc
+    
+    #
+    #
+    #
+    @staticmethod
+    def _makeData(state: int, counter: int | None) -> bytearray:
+        data = bytearray(8)
+        data[7] = 0 if counter is None else (counter + 1) % 15  # 0x0...0xE
+        data[1:7] = state.to_bytes(6, 'little')
+        data[0] = BodyTask.calcCrc(data[1:])
+        return data
+    
+    #
+    #
+    #
+    def _getState(self) -> int:
+        with self.lock as _:
+            return self.state
+        
+    #
+    #
+    #
+    def _setState(self, state: int) -> None:
+        with self.lock as _:
+            self.state = state
+
+    #
+    #
+    #
+    def _mutate(self, old_data: bytes | None) -> bytearray:
+        state = self._getState() & 0x0000FFFFFFFFFFFF
+        return BodyTask._makeData(state, None if old_data is None else old_data[7])
+    
+    #
+    #
+    #
+    def __init__(self, bus: can.interface.Bus):
+        super().__init__('wheel', bus)
+        self.lock = threading.Lock()
+        self.state = self.kDefaultState
+
+    #
+    #
+    #
+    def _create(self):
+        msg = can.Message(
+            arbitration_id = 0x244,
+            data = self._mutate(None),
+            is_extended_id = False)
+        mutator = lambda msg: setattr(msg, 'data', self._mutate(msg.data))
+        task = self.bus.send_periodic(msg, 0.2, modifier_callback = mutator)
+        assert isinstance(task, can.CyclicSendTaskABC)
+        return task
+
+    #
+    #
+    #
+    def _destroy(self, task):
+        task.stop()
+
+    #
+    #
+    #
+    def update(self, state: WheelButtonState) -> None:
+        old_state = self._getState()
+        new_state = WheelButtonTask.convert(state)
+        if old_state == new_state:
+            raise ValueError('WheelButton state is not changed')
+
+        self._setState(new_state)
+        print(f'WheelButton state change: 0x{old_state:X} -> 0x{new_state:X}')
+
+        old_data_hex = WheelButtonTask._makeData(old_state, None).hex().upper()
+        new_data_hex = WheelButtonTask._makeData(new_state, None).hex().upper()
+        print(f'WheelButton data: {old_data_hex} -> {new_data_hex}')
 
 #
 # Translator for on/off
@@ -457,7 +555,7 @@ class BodyCommand(CommandBase):
     def __init__(self, bus: can.interface.Bus):
         super().__init__()
         self.task = BodyTask(bus)
-        self.state = BodyState(False, False)
+        self.state = BodyState()
 
     #
     #
@@ -486,7 +584,7 @@ class BodyCommand(CommandBase):
         if arg is None:
             raise ValueError('Argument must be provided')
         
-        parts = arg.split('.')
+        parts = arg.split('@')
         if len(parts) == 1:
             start = isTurnOnOff(arg)
             if start is None:
@@ -500,6 +598,85 @@ class BodyCommand(CommandBase):
             self.task.update(self.state)
         else:
             raise ValueError(f'Invalid part count: {arg}')
+        
+#
+# @brief Body command 
+# Controls display and wireless interfaces (WiFi, BT)
+# @warning The ignition should be on
+#
+class WheelButtonCommand(CommandBase):
+    #
+    #
+    #
+    kShortDuration = 0.3
+    kNormalDuration = 1
+    kLongDuration = 5
+
+    #
+    #
+    #
+    @staticmethod
+    def _getState(button: str) -> WheelButtonState:
+        state = WheelButtonState()
+
+        field = {
+            'vu': 'volume_up',
+            'vd': 'volume_down'
+        }.get(button)
+        if field is None:
+            raise ValueError(f'Invalid field: {field}')
+        
+        setattr(state, field, True)
+        return state
+    
+    #
+    #
+    #
+    @staticmethod 
+    def _getDuration(duration: str) -> float:
+        if duration == 'short' or duration == 's':
+            return WheelButtonCommand.kShortDuration
+        
+        if duration == 'normal' or duration == 'n':
+            return WheelButtonCommand.kNormalDuration
+        
+        if duration == 'long' or duration == 'l':
+            return WheelButtonCommand.kLongDuration
+        
+        return float(duration)
+    
+    #
+    # TODO: pass duration to task
+    #
+    def _pressButton(self, state: WheelButtonState, duration: float):
+        self.task.update(state)
+        self.task.start()
+        time.sleep(duration)
+        self.task.update(WheelButtonState())
+        time.sleep(WheelButtonCommand.kShortDuration)
+        self.task.stop()
+
+    #
+    #
+    #
+    def __init__(self, bus: can.interface.Bus):
+        super().__init__()
+        self.task = WheelButtonTask(bus)
+
+    #
+    #
+    #
+    def execute(self, arg) -> None:
+        if arg is None:
+            raise ValueError('Argument must be provided')
+        
+        parts = arg.split('@')
+        if len(parts) != 2:
+            raise ValueError(f'Invalid part count: {arg}')
+        
+        pressed_state = WheelButtonCommand._getState(parts[0])
+        duration = WheelButtonCommand._getDuration(parts[1])
+        self._pressButton(pressed_state, duration)
 
 #
 # Event loop
@@ -510,10 +687,10 @@ def eventLoop(emu: Emulator) -> None:
         'ign': IgnitionCommand(emu.bus),
         'hut-stb': HutStandbyCommand(emu.bus),
         'hut-reboot': HutRebootCommand(emu.bus, emu.uds_mode),
-        'body': BodyCommand(emu.bus)
+        'body': BodyCommand(emu.bus),
+        'wheel-btn': WheelButtonCommand(emu.bus)
     }
 
-    tasks = {}
     while True:
         try:
             line = input("sc-can> ").strip()
