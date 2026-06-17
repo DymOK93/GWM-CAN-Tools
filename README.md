@@ -21,10 +21,12 @@ options:
   --range RANGE, -r RANGE
                         first,last trace lines
 ```
-### Emulate SC-CAN
-Devices on the bus: Gateway, HUT (only Harman GWMv2 is supported), T-Box, ADAS, IP (Cluster)
+### Emulate CAN
+Supported devices: 
+1. SC-CAN - HUT (only Harman GWMv2 is supported)
+2. BD-CAN - IP (Cluster), HUD
 ```
-usage: sc_can_emulator.py [-h] [--uds-mode {user,developer}] [--loglevel {DEBUG,INFO,WARNING,ERROR}]
+usage: can_emulator.py [-h] [--uds-mode {user,developer}] [--loglevel {DEBUG,INFO,WARNING,ERROR}]
 
 options:
   -h, --help            show this help message and exit
@@ -41,7 +43,7 @@ Commands:
 * `hut-stb=on` - switch HUT to standby mode (works only when the ignition is on);
 * `hut-stb=off` - switch HUT to background mode;
 * `hut-reboot=<boot_target>` - reboot the HUT to `normal`, `recovery` or `ELK` (supported only in developer mode)
-* `exit` (or just press CTRL+C) - finish work.
+* `exit`, `q` - finish work.
 
 ### Reboot HUT using a J2534-compatible OBD2-scanner
 ```
