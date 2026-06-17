@@ -5,11 +5,12 @@ import isotp
 from udsoncan.connections import PythonIsoTpConnection
 from abc import ABC, abstractmethod
 import argparse
-from dataclasses import dataclass, fields
 import logging
 import time
 import threading
 import uds
+from dataclasses import dataclass, fields
+from typing import Callable, TypeVar
 
 #
 # Program state
@@ -269,6 +270,10 @@ class BodyTask(TaskBase):
 class WheelButtonState:
     volume_up: bool = False
     volume_down: bool = False
+    back: bool = False
+    ok: bool = False
+    arrow_up: bool = False
+    arrow_down: bool = False
 
 #
 # @brief KBCM periodic task
@@ -291,6 +296,18 @@ class WheelButtonTask(TaskBase):
 
         if state.volume_down:
             raw_state |= 0x1000
+
+        if state.back:
+            raw_state |= 0x10000000000
+
+        if state.ok:
+            raw_state |= 0x400000
+
+        if state.arrow_up:
+            raw_state |= 0x40
+
+        if state.arrow_down:
+            raw_state |= 0x10
 
         return raw_state
     
@@ -482,12 +499,9 @@ class Notifier(can.Notifier):
         super().stop() 
 
 #
-# @brief HUT reboot command 
-# Reboots the HUT to the specified boot target via the UDS interface
-# @warning The ignition should be on
-# @warning Doesn't work in Android recovery and ELK
+# Various UDS commands
 #
-class HutRebootCommand(CommandBase):
+class UdsCommandBase(CommandBase):
     #
     #
     #
@@ -521,27 +535,110 @@ class HutRebootCommand(CommandBase):
             address = addr,
             params = params)
         return PythonIsoTpConnection(transport)
+    
+    #
+    #
+    #
+    T = TypeVar('T', bound = uds.Ecu)
+    R = TypeVar('R')
+    def _executeSafe(self, handler: Callable[[T], R]) -> R:
+        with Notifier(self.bus) as notifier:
+            make_conn = lambda txid, rxid: UdsCommandBase._createConnection(self.bus, notifier, txid, rxid)
+            with self.ecu_cls(self.uds_mode, make_conn) as ecu:
+                return ecu.callSafe(handler, ecu)
+        
+    #
+    #
+    #
+    T = TypeVar('T', bound = uds.Ecu)
+    def __init__(self, bus: can.interface.Bus, uds_mode: uds.Mode, ecu_cls: type[T]):
+        super().__init__()
+        self.bus = bus
+        self.uds_mode = uds_mode
+        self.ecu_cls = ecu_cls
 
+#
+# @brief Various HUT commands
+#
+class HutCommandBase(UdsCommandBase):
     #
     #
     #
     def __init__(self, bus: can.interface.Bus, uds_mode: uds.Mode):
-        super().__init__()
-        self.bus = bus
-        self.uds_mode = uds_mode
+        super().__init__(bus, uds_mode, uds.HarmanHut)
+
+#
+# @brief HUT reboot command 
+# Reboots the HUT to the specified boot target via the UDS interface
+# @warning The ignition should be on
+# @warning Doesn't work in Android recovery and ELK
+#
+class HutRebootCommand(HutCommandBase):
+    #
+    #
+    #
+    def _rebootToBootTarget(self, hut: uds.HarmanHut, target: str) -> None:
+        hut.setBootTarget(target)
+        hut.resetHard()
 
     #
     #
     #
-    def execute(self, target: str):
-        if target is None:
+    def execute(self, target) -> None:
+        if not isinstance(target, str):
             raise ValueError('Target must be provided')
 
         print(f'Reboot HUT to {target}')
-        with Notifier(self.bus) as notifier:
-            make_conn = lambda txid, rxid: HutRebootCommand._createConnection(self.bus, notifier, txid, rxid)
-            with uds.HarmanHut(self.uds_mode, make_conn) as hut:
-                hut.reboot(target)
+        self._executeSafe(lambda hut: self._rebootToBootTarget(hut, target))
+        
+#
+# @brief Various IP commands
+#
+class IpCommandBase(UdsCommandBase):
+    #
+    #
+    #
+    def __init__(self, bus: can.interface.Bus, uds_mode: uds.Mode):
+        super().__init__(bus, uds_mode, uds.CymIp)
+
+#
+# @brief IP reboot command 
+# Reboots the IP via the UDS interface
+#
+class IpRebootCommand(IpCommandBase):
+    #
+    #
+    #
+    def execute(self, _) -> None:
+        print(f'Reboot IP')
+        self._executeSafe(lambda ip: ip.resetHard())
+
+#
+# @brief IP get config command 
+# Reads the IP config via the UDS interface
+#
+class IpGetConfigCommand(IpCommandBase):
+    #
+    #
+    #
+    def execute(self, _: str):
+        print(f'Read IP config')
+        self._executeSafe(lambda ip: print(f'{ip.getVehicleConfigStr()}'))
+
+#
+# @brief IP get config command 
+# Reads the IP config via the UDS interface
+#
+class IpSetConfigCommand(IpCommandBase):
+    #
+    #
+    #
+    def execute(self, config: str):
+        if not isinstance(config, str):
+            raise ValueError('Config must be provided')
+
+        print(f'Write IP config')
+        self._executeSafe(lambda ip: ip.setVehicleConfigStr(config))
 
 #
 # @brief Body command 
@@ -621,7 +718,11 @@ class WheelButtonCommand(CommandBase):
 
         field = {
             'vu': 'volume_up',
-            'vd': 'volume_down'
+            'vd': 'volume_down',
+            'bk': 'back',
+            'ok': 'ok',
+            'au': 'arrow_up',
+            'ad': 'arrow_down'
         }.get(button)
         if field is None:
             raise ValueError(f'Invalid field: {field}')
@@ -679,6 +780,147 @@ class WheelButtonCommand(CommandBase):
         self._pressButton(pressed_state, duration)
 
 #
+# @brief UDS listen command
+# Passively sniffs the bus and prints raw CAN messages
+# @remark Runs until Ctrl+C
+#
+class RawListenCommand(CommandBase):
+    #
+    #
+    #
+    @staticmethod
+    def _parseIds(part: str) -> set[int]:
+        return {int(token.strip(), 0) for token in part.split(",") if token.strip()}    
+
+    #
+    #
+    #
+    @staticmethod
+    def _makeIdFilter(filters: str) -> tuple[set[int], set[int]]:
+        if filters is None:
+            return (set(), set())
+
+        enabled_part, disabled_part = (filters.split(";", 1) + [""])[:2]
+        enabled_ids = RawListenCommand._parseIds(enabled_part)
+        disabled_ids = RawListenCommand._parseIds(disabled_part)
+        return enabled_ids, disabled_ids
+
+    #
+    #
+    #
+    def __init__(self, bus: can.interface.Bus) -> None:
+        super().__init__()
+        self.bus = bus
+
+    #
+    #
+    #
+    def execute(self, filters: str) -> None:
+        print('Listening for raw traffic (Ctrl+C to stop)')
+        enabled_ids, disabled_ids = RawListenCommand._makeIdFilter(filters)
+
+        print(f'Enabled: {enabled_ids}')
+        print(f'Disabled: {disabled_ids}')
+        while True:
+            msg = self.bus.recv(0.5)
+            if msg is None:
+                continue
+
+            id = msg.arbitration_id
+            if (len(enabled_ids) > 0 and id not in enabled_ids) or id in disabled_ids:
+                continue
+
+            print(f'  0x{id:03X} {msg.data.hex(" ")}')
+
+#
+# @brief UDS listen command
+# Passively sniffs the bus and prints discovered UDS request/response CAN IDs (11-bit only)
+# @remark Decodes only the first ISO-TP frame to detect the service; runs until Ctrl+C
+#
+class UdsListenCommand(CommandBase):
+    #
+    # Request SID -> service name (positive response = SID | 0x40, negative = 0x7F)
+    #
+    kServices = {
+        0x10: 'DiagnosticSessionControl', 0x11: 'ECUReset',
+        0x14: 'ClearDiagnosticInformation', 0x19: 'ReadDTCInformation',
+        0x22: 'ReadDataByIdentifier', 0x23: 'ReadMemoryByAddress',
+        0x24: 'ReadScalingDataByIdentifier', 0x27: 'SecurityAccess',
+        0x28: 'CommunicationControl', 0x2A: 'ReadDataByPeriodicIdentifier',
+        0x2C: 'DynamicallyDefineDataIdentifier', 0x2E: 'WriteDataByIdentifier',
+        0x2F: 'InputOutputControlByIdentifier', 0x31: 'RoutineControl',
+        0x34: 'RequestDownload', 0x35: 'RequestUpload', 0x36: 'TransferData',
+        0x37: 'RequestTransferExit', 0x38: 'RequestFileTransfer',
+        0x3D: 'WriteMemoryByAddress', 0x3E: 'TesterPresent',
+        0x83: 'AccessTimingParameter', 0x84: 'SecuredDataTransmission',
+        0x85: 'ControlDTCSetting', 0x86: 'ResponseOnEvent', 0x87: 'LinkControl',
+    }
+
+    #
+    # Extract the UDS payload from an ISO-TP frame (SF/FF only)
+    #
+    @staticmethod
+    def _decode(data: bytes) -> bytes | None:
+        if not data:
+            return None
+        pci = data[0] >> 4
+        if pci == 0:                                # ISO-TP Single Frame
+            return bytes(data[1:1 + (data[0] & 0x0F)])
+        if pci == 1:                                # ISO-TP First Frame
+            return bytes(data[2:])
+        return None                                 # CF / FC are ignored
+
+    #
+    # Classify payload -> ('txid'|'rxid', request_sid) or None if not UDS
+    #
+    @staticmethod
+    def _classify(payload: bytes) -> tuple[str, int] | None:
+        sid = payload[0]
+        if sid == 0x7F and len(payload) >= 2:                       # negative response
+            base, role = payload[1], 'rxid'
+        elif (sid & 0x40) and (sid & 0xBF) in UdsListenCommand.kServices:  # positive response
+            base, role = sid & 0xBF, 'rxid'
+        elif sid in UdsListenCommand.kServices:                     # request
+            base, role = sid, 'txid'
+        else:
+            return None
+        return role, base
+
+    #
+    #
+    #
+    def __init__(self, bus: can.interface.Bus) -> None:
+        super().__init__()
+        self.bus = bus
+
+    #
+    #
+    #
+    def execute(self, _: str) -> None:
+        print('Listening for UDS traffic (Ctrl+C to stop)')
+        seen = set()
+        while True:
+            msg = self.bus.recv(0.5)
+            if msg is None or msg.is_extended_id:   # 11-bit only
+                continue
+
+            payload = UdsListenCommand._decode(msg.data)
+            if not payload:
+                continue
+
+            result = UdsListenCommand._classify(payload)
+            if result is None:
+                continue
+            role, base = result
+            name = UdsListenCommand.kServices.get(base, f'SID 0x{base:02X}')
+
+            key = (msg.arbitration_id, role)
+            if key not in seen:
+                seen.add(key)
+                print(f'{role}=0x{msg.arbitration_id:03X}  {name}')
+            print(f'  0x{msg.arbitration_id:03X} {role:4} {payload.hex(" ")}')
+
+#
 # Event loop
 # @param[in] bus CAN bus instance
 #
@@ -687,8 +929,13 @@ def eventLoop(emu: Emulator) -> None:
         'ign': IgnitionCommand(emu.bus),
         'hut-stb': HutStandbyCommand(emu.bus),
         'hut-reboot': HutRebootCommand(emu.bus, emu.uds_mode),
+        'ip-reboot': IpRebootCommand(emu.bus, emu.uds_mode),
+        'ip-getcfg': IpGetConfigCommand(emu.bus, emu.uds_mode),
+        'ip-setcfg': IpSetConfigCommand(emu.bus, emu.uds_mode),
         'body': BodyCommand(emu.bus),
-        'wheel-btn': WheelButtonCommand(emu.bus)
+        'wheel-btn': WheelButtonCommand(emu.bus),
+        'raw-listen': RawListenCommand(emu.bus),
+        'uds-listen': UdsListenCommand(emu.bus)
     }
 
     while True:
@@ -721,7 +968,7 @@ def eventLoop(emu: Emulator) -> None:
 # Does processing
 #
 def main():
-    print('SC-CAN emulator')
+    print('CAN emulator')
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--uds-mode', type = str, default = 'user', choices = ['user', 'developer'], help = 'Work mode')

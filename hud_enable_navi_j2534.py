@@ -1,0 +1,53 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+from udsoncan.connections import J2534Connection
+import argparse
+import logging
+import uds
+
+#
+#
+#
+def updateConfigForNavi(hud: uds.Hud) -> None:
+    old_config = hud.getVehicleConfigStr()
+    print(f'Read old config: {old_config}')
+
+    config = list(old_config)
+    config[9] = '8'  # 10th HEX symbol
+    new_config = ''.join(config)
+
+    print(f'Write new config: {new_config}')
+    hud.setVehicleConfigStr(new_config)
+
+    print('Reboot')
+    hud.resetHard()
+
+#
+#
+#
+def enableNavi(uds_mode: str, windll: str) -> None:
+    print('Enable navigation in HUD')
+    with uds.Hud(uds.getModeValue(uds_mode), 
+                       lambda txid, rxid: J2534Connection(windll, rxid, txid)) as hud:
+        hud.callSafe(lambda: updateConfigForNavi(hud))
+
+#
+# Does processing
+#
+def main():
+    print('Enable navigation in HUD using J2534 compatible scanner')
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--uds-mode', type = str, default = 'user', choices = ['user', 'developer'], help = 'Work mode')
+    parser.add_argument('--windll', type = str, default = 'smj2534.dll', help = 'Path to J2534 shared library')
+    parser.add_argument('--loglevel', default = 'ERROR', choices = ['DEBUG', 'INFO', 'WARNING', 'ERROR'], help='Logging level')
+    args = parser.parse_args()
+
+    logging.basicConfig(level = getattr(logging, args.loglevel))
+    enableNavi(args.uds_mode, args.windll)
+
+#
+# Launches main
+#
+if __name__ == "__main__":
+    main()   

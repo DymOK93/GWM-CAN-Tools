@@ -2,15 +2,16 @@
 # -*- coding: utf-8 -*-
 import udsoncan
 from udsoncan.client import Client
-from udsoncan.connections import BaseConnection, J2534Connection
+from udsoncan.connections import BaseConnection
 from udsoncan import configs as Configs
 from udsoncan import exceptions as Exceptions
 from udsoncan import services as Services
 import bidict
 import struct
 from abc import ABC
+from dataclasses import dataclass
 from enum import IntEnum
-from typing import Callable
+from typing import Callable, TypeVar
 
 #
 # Operating mode
@@ -48,36 +49,215 @@ def getModeName(value: Mode) -> str:
     return name
 
 #
-#
-#
-def isHardwareConnection(conn: BaseConnection) -> bool:
-    return isinstance(conn, J2534Connection)
-
-#
 # Unit controlled by UDS
 #
 class Ecu(ABC):
-    def __init__(self, mode: Mode, client: Client) -> None:
-        super().__init__()
-        self.client = client
-        self.mode = mode
+    #
+    # OEM DID
+    #
+    class DataIdentifier(udsoncan.DataIdentifier):
+        VehicleConfig = 0xF1B1
 
-    def __enter__(self):
-        self.client.__enter__()
-        return self
-    
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.client.__exit__(exc_type, exc_value, traceback)
+    #
+    #
+    #
+    @dataclass
+    class Settings:
+        tx_id: int
+        rx_id: int
+        config_length: int | None = None
+        security_poly: int | None = None
 
-#
-# Harman GWMv2
-#
-class HarmanHut(Ecu):
+    #
+    #
+    #
+    class RawCodec(udsoncan.DidCodec):
+        #
+        #
+        #
+        def __init__(self, length):
+            self.length = length
+
+        #
+        #
+        #
+        def encode(self, value: bytes) -> bytes:
+            value_length = len(value)
+            if value_length != len(self):
+                raise ValueError(f'Invalid value length: {value_length}')
+            
+            return value
+
+        #
+        #
+        #
+        def decode(self, payload: bytes):
+            return payload
+
+        #
+        #
+        #
+        def __len__(self):
+            return self.length
+        
     #
     #
     #
     DefaultSecurityLevel = 1
 
+    #
+    #
+    #
+    @staticmethod    
+    def _generateKey(seed: int, poly: int) -> int:
+        if seed < 0 or seed > 0xFFFFFFFF:
+            raise ValueError(f'Invalid UINT32 seed: {seed}')
+        
+        key = seed
+        if key != 0:
+            for _ in range (0, 35):
+                msb = key & 0x80000000
+                key = (key << 1) & 0xFFFFFFFF
+                if msb != 0:
+                    key ^= poly
+
+        return key
+    
+    #
+    #
+    #
+    @staticmethod
+    def _securityAlgo(level: int, seed: bytes, params: int) -> bytes:
+        if level != Ecu.DefaultSecurityLevel:
+            raise ValueError(f'Security level {level} is not supported')
+
+        key = Ecu._generateKey(int.from_bytes(seed, 'big'), params)
+        return bytes(key.to_bytes(4, 'big'))
+    
+    #
+    #
+    #
+    @classmethod
+    def _getDataIdentifiers(cls, settings: Settings) -> dict[int, udsoncan.DidCodec]:
+        dids = {
+            udsoncan.DataIdentifier.VIN: udsoncan.AsciiCodec(17)
+        }
+
+        config_length = settings.config_length
+        if config_length is not None:
+            if config_length <= 0:
+                raise ValueError(f'Invalid config length: {config_length}')
+
+            dids[Ecu.DataIdentifier.VehicleConfig] = Ecu.RawCodec(config_length);
+
+        return dids
+    
+    #
+    #
+    #
+    @classmethod 
+    def _getConfig(cls, settings: Settings):
+        config = Configs.default_client_config.copy()
+
+        #
+        # Default 50 ms is too short for non-realtime PC even with J2534 adapter
+        #
+        config['use_server_timing'] = False  
+        config['p2_timeout'] = 2.0
+        config['p2_star_timeout'] = 5.0
+
+        #
+        # ReadDataByIdentifier/WriteDataByIdentifier (0x22/0x27)
+        #
+        config['data_identifiers'] = cls._getDataIdentifiers(settings)
+
+        #
+        # SecurityAccess (0x27)
+        #
+        security_poly = settings.security_poly
+        if security_poly is not None:
+            config['security_algo'] = Ecu._securityAlgo
+            config['security_algo_params'] = security_poly
+
+        return config
+
+    #
+    #
+    #
+    def __init__(self, mode: Mode, name: str, make_conn: Callable[[int, int], BaseConnection], settings: Settings) -> None:
+        super().__init__()
+        conn = make_conn(settings.tx_id, settings.rx_id)
+        config = type(self)._getConfig(settings)
+
+        self.mode = mode
+        self.name = name
+        self.client = Client(conn, config)
+
+    #
+    #
+    #
+    def __enter__(self):
+        self.client.__enter__()
+        return self
+    
+    #
+    #
+    #
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.client.__exit__(exc_type, exc_value, traceback)
+
+    #
+    #
+    #
+    T = TypeVar('T')
+    def callSafe(self, handler: Callable[..., T], *args, **kwargs) -> T | None:
+        try:
+            return handler(*args, **kwargs)
+        except Exceptions.TimeoutException as exc:
+            print(f'{self.name} request timeout')
+        except Exceptions.NegativeResponseException as exc:
+            print(f'{self.name} refused request with code {exc.response.code_name} (0x{exc.response.code:X})')
+        except (Exceptions.InvalidResponseException, Exceptions.UnexpectedResponseException) as exc:
+            print(f'{self.name} sent an invalid payload: {exc.response.original_payload}')
+
+    #
+    #
+    #
+    def resetHard(self):
+        self.client.ecu_reset(Services.ECUReset.ResetType.hardReset)
+
+    #
+    #
+    #
+    def getVehicleConfig(self) -> bytes:
+        return self.client.read_data_by_identifier_first(Ecu.DataIdentifier.VehicleConfig)
+    
+    #
+    #
+    #
+    def getVehicleConfigStr(self) -> str:
+        raw_config = self.getVehicleConfig()
+        return raw_config.hex().upper()
+
+    #
+    #
+    #
+    def setVehicleConfig(self, config: bytes) -> None:
+        self.client.change_session(Services.DiagnosticSessionControl.Session.extendedDiagnosticSession)
+        self.client.unlock_security_access(Ecu.DefaultSecurityLevel)
+        self.client.write_data_by_identifier(Ecu.DataIdentifier.VehicleConfig, config)
+
+    #
+    #
+    #
+    def setVehicleConfigStr(self, config: str) -> None:
+        raw_config = bytes.fromhex(config)
+        self.setVehicleConfig(raw_config)
+
+#
+# Harman GWMv2
+#
+class HarmanHut(Ecu):
     #
     # OEM DID
     #
@@ -109,49 +289,32 @@ class HarmanHut(Ecu):
         def __len__(self):
             return 2
         
-    #
-    #
-    #
-    @staticmethod    
-    def _generateKey(seed: int) -> int:
-        if seed < 0 or seed > 0xFFFFFFFF:
-            raise ValueError(f'Invalid UINT32 seed: {seed}')
-        
-        key = seed
-        if key != 0:
-            for idx in range (0, 35):
-                msb = key & 0x80000000
-                key = (key << 1) & 0xFFFFFFFF
-                if msb != 0:
-                    key ^= 0x48205554
-        return key
-    
-    #
-    #
-    #
-    @staticmethod
-    def _securityAlgo(level: int, seed: bytes, params) -> bytes:
-        if level != 1:
-            raise ValueError(f'Security level {level} is not supported')
-
-        key = HarmanHut._generateKey(int.from_bytes(seed, 'big'))
-        return bytes(key.to_bytes(4, 'big'))
+    @classmethod
+    def _getDataIdentifiers(cls, settings: Ecu.Settings) -> dict[int, udsoncan.DidCodec]:
+        dids = super()._getDataIdentifiers(settings)
+        dids[HarmanHut.DataIdentifier.PowerPolicy] = HarmanHut.PowerPolicyCodec()
+        return dids
 
     #
     #
     #
     def __init__(self, mode: Mode, make_conn: Callable[[int, int], BaseConnection]) -> None:
-        conn = make_conn(0x773, 0x7B3)
-        config = Configs.default_client_config.copy()
-        config['use_server_timing'] = not isHardwareConnection(conn)
-        config['security_algo'] = HarmanHut._securityAlgo
-        config['data_identifiers'] = {HarmanHut.DataIdentifier.PowerPolicy: HarmanHut.PowerPolicyCodec}
-        super().__init__(mode, Client(conn, config))
+        super().__init__(
+                mode,
+                'HUT',
+                make_conn,
+                Ecu.Settings(
+                    tx_id = 0x773,
+                    rx_id = 0x7B3,
+                    config_length = 66,
+                    security_poly = 0x48205554  # 'H UT'
+                )
+            )
 
     #
     #
     #
-    def reboot(self, target: str) -> None:
+    def setBootTarget(self, target: str) -> None:
         choices = {
             'normal': (0, Mode.User),
             'recovery': (1, Mode.User),
@@ -164,14 +327,48 @@ class HarmanHut(Ecu):
         if self.mode < min_mode:
             raise ValueError(f'HUT reboot to {target} requires at least {getModeName(min_mode)} mode')
             
-        try:
-            self.client.change_session(Services.DiagnosticSessionControl.Session.extendedDiagnosticSession)
-            self.client.unlock_security_access(HarmanHut.DefaultSecurityLevel)
-            self.client.write_data_by_identifier(HarmanHut.DataIdentifier.PowerPolicy, bytes([0x4]) + value.to_bytes(1, 'big'))
-            self.client.ecu_reset(Services.ECUReset.ResetType.hardReset)
-        except Exceptions.TimeoutException as exc:
-            print(f'HUT request timeout')
-        except Exceptions.NegativeResponseException as exc:
-            print(f'HUT refused reboot request with code {exc.response.code_name} (0x{exc.response.code:X})')
-        except (Exceptions.InvalidResponseException, Exceptions.UnexpectedResponseException) as exc:
-            print(f'HUT sent an invalid payload: {exc.response.original_payload}')
+        self.client.change_session(Services.DiagnosticSessionControl.Session.extendedDiagnosticSession)
+        self.client.unlock_security_access(Ecu.DefaultSecurityLevel)
+        self.client.write_data_by_identifier(HarmanHut.DataIdentifier.PowerPolicy, bytes([0x4]) + value.to_bytes(1, 'big'))
+
+#
+# CYM IP (Cluster)
+#
+class CymIp(Ecu):
+    #
+    #
+    #
+    def __init__(self, mode: Mode, make_conn: Callable[[int, int], BaseConnection]) -> None:
+        super().__init__(
+                mode,
+                'IP',
+                make_conn,
+                Ecu.Settings(
+                    tx_id = 0x766,
+                    rx_id = 0x7A6,
+                    config_length = 66,
+                    security_poly = 0x20204950  # '  IP'
+                )
+            )
+
+
+#
+# HUD
+#
+class Hud(Ecu):    
+    #
+    #
+    #
+    def __init__(self, mode: Mode, make_conn: Callable[[int, int], BaseConnection]) -> None:
+        super().__init__(
+            mode,
+            'HUD',
+            make_conn,
+            Ecu.Settings(
+                tx_id = 0x777,
+                rx_id = 0x7B7,
+                config_length = 31,
+                security_poly = 0x28904238  # '(.B8', but seed is always 0x4272696C ('Bril')
+            )
+        )
+
