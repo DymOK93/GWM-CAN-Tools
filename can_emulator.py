@@ -940,7 +940,7 @@ def eventLoop(emu: Emulator) -> None:
 
     while True:
         try:
-            line = input("sc-can> ").strip()
+            line = input("can> ").strip()
             if not line:
                 continue
 

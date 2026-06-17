@@ -2,8 +2,8 @@
 ## Description
 Tools for emulating the sequence of CAN commands for running automotive units in the home lab.
 ## Requirements
-Python 3.2 or newer with python-can and pyserial packages installed.
-CAN adapter with slcan support (e.g. MKS Canable V2.0).
+Python 3.10 or newer with pyserial, python-can and udsoncan packages installed.
+CAN adapter should support slcan (e.g. MKS Canable V2.0) or J2534 (limited set of features is available).
 ## Usage
 Change the channel to the COM name (Windows) or the device path (Linux) in the `can.ini` configuration file.
 ### Replay traces
@@ -35,7 +35,7 @@ options:
   --loglevel {DEBUG,INFO,WARNING,ERROR}
                         Logging level
 
-sc-can> (see available commands below)
+can> (see available commands below)
 ```
 Commands:
 * `ign=on` - turn on the ignition;
@@ -45,7 +45,8 @@ Commands:
 * `hut-reboot=<boot_target>` - reboot the HUT to `normal`, `recovery` or `ELK` (supported only in developer mode)
 * `exit`, `q` - finish work.
 
-### Reboot HUT using a J2534-compatible OBD2-scanner
+### Reboot using a J2534-compatible adapter
+Reboot HUT to the specified boot target:
 ```
 usage: hut_reboot_j2534.py [-h] [--uds-mode {user,developer}] [--windll WINDLL]
                            [--loglevel {DEBUG,INFO,WARNING,ERROR}]
@@ -53,6 +54,22 @@ usage: hut_reboot_j2534.py [-h] [--uds-mode {user,developer}] [--windll WINDLL]
 
 positional arguments:
   {}                    Boot target
+
+options:
+  -h, --help            show this help message and exit
+  --uds-mode {user,developer}
+                        Work mode
+  --windll WINDLL       Path to J2534 shared library
+  --loglevel {DEBUG,INFO,WARNING,ERROR}
+                        Logging level
+```
+The `ip_reboot_j2534.py` and `hud_reboot_j2534.py` are used to reboot the IP (cluster) and HUD, respectively.
+
+### Enable navigation prompts on HUD using a J2534-compatible adapter
+Enabling the display of navigation arrows and distance to maneuver requires changing the 10th HEX character of the configuration to "8".
+```
+usage: hud_enable_navi_j2534.py [-h] [--uds-mode {user,developer}] [--windll WINDLL]
+                                [--loglevel {DEBUG,INFO,WARNING,ERROR}]
 
 options:
   -h, --help            show this help message and exit
