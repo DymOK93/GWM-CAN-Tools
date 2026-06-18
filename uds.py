@@ -434,10 +434,10 @@ class Tpms(Ecu):
             'HUD',
             make_conn,
             Ecu.Settings(
-                tx_id = 0x777,
-                rx_id = 0x7B7,
+                tx_id = 0x76C,
+                rx_id = 0x7AC,
                 vehicle_config = VehicleConfigParameters(
-                    did = Tpms.DataIdentifier.VehicleConfig,
+                    did = 0xB000,
                     length = 31
                 ),
                 security = SecurityParameters(
