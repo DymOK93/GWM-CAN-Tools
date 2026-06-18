@@ -441,8 +441,7 @@ class Tpms(Ecu):
                     length = 31
                 ),
                 security = SecurityParameters(
-                    poly = 0x54504D53,  # 'TPMS'
-                    mask = 0xFFFFFF     # 24 bits
+                    poly = 0x54504D53  # 'TPMS'
                 )
             )
         ) 
