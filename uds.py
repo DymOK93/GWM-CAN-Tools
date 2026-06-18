@@ -49,6 +49,22 @@ def getModeName(value: Mode) -> str:
     return name
 
 #
+#
+#
+@dataclass
+class SecurityParameters:
+    poly: int
+    mask: int = 0xFFFFFFFF
+
+#
+#
+#
+@dataclass
+class VehicleConfigParameters:
+    did: int
+    length: int
+
+#
 # Unit controlled by UDS
 #
 class Ecu(ABC):
@@ -65,8 +81,8 @@ class Ecu(ABC):
     class Settings:
         tx_id: int
         rx_id: int
-        config_length: int | None = None
-        security_poly: int | None = None
+        vehicle_config: VehicleConfigParameters | None
+        security: SecurityParameters | None = None
 
     #
     #
@@ -109,7 +125,7 @@ class Ecu(ABC):
     #
     #
     @staticmethod    
-    def _generateKey(seed: int, poly: int) -> int:
+    def _generateKey(seed: int, poly: int, mask: int) -> int:
         if seed < 0 or seed > 0xFFFFFFFF:
             raise ValueError(f'Invalid UINT32 seed: {seed}')
         
@@ -121,17 +137,17 @@ class Ecu(ABC):
                 if msb != 0:
                     key ^= poly
 
-        return key
+        return key & mask
     
     #
     #
     #
     @staticmethod
-    def _securityAlgo(level: int, seed: bytes, params: int) -> bytes:
+    def _securityAlgo(level: int, seed: bytes, params: SecurityParameters) -> bytes:
         if level != Ecu.DefaultSecurityLevel:
             raise ValueError(f'Security level {level} is not supported')
 
-        key = Ecu._generateKey(int.from_bytes(seed, 'big'), params)
+        key = Ecu._generateKey(int.from_bytes(seed, 'big'), params.poly, params.mask)
         return bytes(key.to_bytes(4, 'big'))
     
     #
@@ -143,12 +159,12 @@ class Ecu(ABC):
             udsoncan.DataIdentifier.VIN: udsoncan.AsciiCodec(17)
         }
 
-        config_length = settings.config_length
-        if config_length is not None:
-            if config_length <= 0:
-                raise ValueError(f'Invalid config length: {config_length}')
+        vehicle_config = settings.vehicle_config
+        if vehicle_config is not None:
+            if vehicle_config.length <= 0:
+                raise ValueError(f'Invalid config length: {vehicle_config.length}')
 
-            dids[Ecu.DataIdentifier.VehicleConfig] = Ecu.RawCodec(config_length);
+            dids[vehicle_config.did] = Ecu.RawCodec(vehicle_config.length);
 
         return dids
     
@@ -174,12 +190,22 @@ class Ecu(ABC):
         #
         # SecurityAccess (0x27)
         #
-        security_poly = settings.security_poly
-        if security_poly is not None:
+        security = settings.security
+        if security is not None:
             config['security_algo'] = Ecu._securityAlgo
-            config['security_algo_params'] = security_poly
+            config['security_algo_params'] = security
 
         return config
+    
+    #
+    #
+    #
+    def _getVehicleConfigDid(self) -> int:
+        vehicle_config = self.settings.vehicle_config
+        if vehicle_config is None:
+            raise ValueError('Vehicle config is not supported')
+        
+        return vehicle_config.did
 
     #
     #
@@ -191,6 +217,7 @@ class Ecu(ABC):
 
         self.mode = mode
         self.name = name
+        self.settings = settings
         self.client = Client(conn, config)
 
     #
@@ -230,7 +257,8 @@ class Ecu(ABC):
     #
     #
     def getVehicleConfig(self) -> bytes:
-        return self.client.read_data_by_identifier_first(Ecu.DataIdentifier.VehicleConfig)
+        did = self._getVehicleConfigDid()
+        return self.client.read_data_by_identifier_first(did)
     
     #
     #
@@ -243,9 +271,10 @@ class Ecu(ABC):
     #
     #
     def setVehicleConfig(self, config: bytes) -> None:
+        did = self._getVehicleConfigDid()
         self.client.change_session(Services.DiagnosticSessionControl.Session.extendedDiagnosticSession)
         self.client.unlock_security_access(Ecu.DefaultSecurityLevel)
-        self.client.write_data_by_identifier(Ecu.DataIdentifier.VehicleConfig, config)
+        self.client.write_data_by_identifier(did, config)
 
     #
     #
@@ -306,8 +335,13 @@ class HarmanHut(Ecu):
                 Ecu.Settings(
                     tx_id = 0x773,
                     rx_id = 0x7B3,
-                    config_length = 66,
-                    security_poly = 0x48205554  # 'H UT'
+                    vehicle_config = VehicleConfigParameters(
+                        did = Ecu.DataIdentifier.VehicleConfig,
+                        length = 66
+                    ),
+                    security = SecurityParameters(
+                        poly = 0x48205554  # 'H UT'
+                    )
                 )
             )
 
@@ -346,16 +380,20 @@ class CymIp(Ecu):
                 Ecu.Settings(
                     tx_id = 0x766,
                     rx_id = 0x7A6,
-                    config_length = 66,
-                    security_poly = 0x20204950  # '  IP'
+                    vehicle_config = VehicleConfigParameters(
+                        did = Ecu.DataIdentifier.VehicleConfig,
+                        length = 66
+                    ),
+                    security = SecurityParameters(
+                        poly = 0x20204950  # '  IP'
+                    )
                 )
             )
-
 
 #
 # HUD
 #
-class Hud(Ecu):    
+class Hud(Ecu):
     #
     #
     #
@@ -367,8 +405,44 @@ class Hud(Ecu):
             Ecu.Settings(
                 tx_id = 0x777,
                 rx_id = 0x7B7,
-                config_length = 31,
-                security_poly = 0x28904238  # '(.B8', but seed is always 0x4272696C ('Bril')
+                vehicle_config = VehicleConfigParameters(
+                    did = Ecu.DataIdentifier.VehicleConfig,
+                    length = 31
+                ),
+                security = SecurityParameters(
+                    poly = 0x28904238  # '(.B8', but seed is always 0x4272696C ('Bril')
+                )
             )
         )
 
+#
+# TPMS
+#
+class Tpms(Ecu):
+    #
+    #
+    #
+    class DataIdentifier(Ecu.DataIdentifier):
+        VehicleConfig = 0xB000
+
+    #
+    #
+    #
+    def __init__(self, mode: Mode, make_conn: Callable[[int, int], BaseConnection]) -> None:
+        super().__init__(
+            mode,
+            'HUD',
+            make_conn,
+            Ecu.Settings(
+                tx_id = 0x777,
+                rx_id = 0x7B7,
+                vehicle_config = VehicleConfigParameters(
+                    did = Tpms.DataIdentifier.VehicleConfig,
+                    length = 31
+                ),
+                security = SecurityParameters(
+                    poly = 0x54504D53,  # 'TPMS'
+                    mask = 0xFFFFFF     # 24 bits
+                )
+            )
+        ) 

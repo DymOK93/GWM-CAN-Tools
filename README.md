@@ -24,7 +24,7 @@ options:
 ### Emulate CAN
 Supported devices: 
 1. SC-CAN - HUT (only Harman GWMv2 is supported)
-2. BD-CAN - IP (Cluster), HUD
+2. BD-CAN - IP (Cluster), HUD, TPMS
 ```
 usage: can_emulator.py [-h] [--uds-mode {user,developer}] [--loglevel {DEBUG,INFO,WARNING,ERROR}]
 
